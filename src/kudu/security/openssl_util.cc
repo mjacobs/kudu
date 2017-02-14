@@ -42,6 +42,12 @@ namespace security {
 
 namespace {
 
+// Determine whether initialization was ever called
+bool g_ssl_is_initialized = false;
+
+// If true, then we expect someone else has initialized SSL.
+bool g_disable_ssl_init = false;
+
 // Array of locks used by OpenSSL.
 // We use an intentionally-leaked C-style array here to avoid non-POD static data.
 Mutex* kCryptoLocks = nullptr;
@@ -62,7 +68,40 @@ void ThreadIdCB(CRYPTO_THREADID* tid) {
   CRYPTO_THREADID_set_numeric(tid, Thread::UniqueThreadId());
 }
 
+Status CheckOpenSSLInitialized() {
+  if (!CRYPTO_get_locking_callback()) {
+    return Status::RuntimeError("Locking callback not initialized");
+  }
+  if (!CRYPTO_THREADID_get_callback()) {
+    return Status::RuntimeError("Thread-ID callback not initialized");
+  }
+  SSL_CTX* ctx = SSL_CTX_new(SSLv23_method());
+  if (!ctx) {
+    return Status::RuntimeError("SSL library appears uninitialized (cannot create SSL_CTX)");
+  }
+  SSL_CTX_free(ctx);
+  return Status::OK();
+}
+
 void DoInitializeOpenSSL() {
+  if (g_disable_ssl_init) {
+    return;
+  }
+
+  // Check that OpenSSL isn't already initialized. If it is, it's likely
+  // we are embedded in (or embedding) another application/library which
+  // initializes OpenSSL, and we risk installing conflicting callbacks
+  // or crashing due to concurrent initialization attempts. In that case,
+  // log a warning.
+  SSL_CTX* ctx = SSL_CTX_new(SSLv23_method());
+  if (ctx) {
+    LOG(DFATAL) << "It appears that OpenSSL has been previously initialized by "
+                << "code outside of Kudu. Please use kudu::client::DisableOpenSSLInitialization() "
+                << "to avoid potential crashes due to conflicting initialization.";
+    SSL_CTX_free(ctx);
+    // Continue anyway rather than crashing the process in release builds.
+  }
+
   SSL_load_error_strings();
   SSL_library_init();
   OpenSSL_add_all_algorithms();
@@ -78,9 +117,22 @@ void DoInitializeOpenSSL() {
   // Callbacks used by OpenSSL required in a multi-threaded setting.
   CRYPTO_set_locking_callback(LockingCB);
   CRYPTO_THREADID_set_callback(ThreadIdCB);
+
+  g_ssl_is_initialized = true;
 }
 
 } // anonymous namespace
+
+Status DisableOpenSSLInitialization() {
+  if (g_disable_ssl_init) return Status::OK();
+  if (g_ssl_is_initialized) {
+    return Status::IllegalState("SSL already initialized. Initialization can only be disabled "
+                                "before first usage.");
+  }
+  RETURN_NOT_OK(CheckOpenSSLInitialized());
+  g_disable_ssl_init = true;
+  return Status::OK();
+}
 
 void InitializeOpenSSL() {
   static std::once_flag ssl_once;

@@ -51,7 +51,12 @@ typedef struct x509_st X509;
 namespace kudu {
 namespace security {
 
+// Disable initialization of OpenSSL. Must be called before
+// any call to InitializeOpenSSL().
+Status DisableOpenSSLInitialization();
+
 // Initializes static state required by the OpenSSL library.
+// This is a no-op if DisableOpenSSLInitialization() has been called.
 //
 // Safe to call multiple times.
 void InitializeOpenSSL();
