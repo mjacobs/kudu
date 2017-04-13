@@ -75,6 +75,8 @@ class ScanConfiguration {
 
   void SetTimeoutMillis(int millis);
 
+  Status SetAdvancedScanOption(std::string name, std::string value);
+
   void OptimizeScanSpec();
 
   const KuduTable& table() {
@@ -133,6 +135,10 @@ class ScanConfiguration {
     return timeout_;
   }
 
+  bool pad_unixtime_micros_for_impala() const {
+    return pad_unixtime_micros_for_impala_;
+  }
+
   Arena* arena() {
     return &arena_;
   }
@@ -173,6 +179,12 @@ class ScanConfiguration {
   // Manages objects which need to live for the lifetime of the configuration,
   // such as schemas, predicates, and keys.
   AutoReleasePool pool_;
+
+  // Whether to pad UNIXTIME_MICROS for Impala. That is whether to make a unix time
+  // micros in a row occupy 16 bytes instead of 8 so that Impala can copy the whole
+  // row batch and change transform UNIXTIME_MICROS to their version of timestamp
+  // in place.
+  bool pad_unixtime_micros_for_impala_;
 };
 
 } // namespace client

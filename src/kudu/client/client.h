@@ -2014,6 +2014,17 @@ class KUDU_EXPORT KuduScanner {
   /// @return Schema of the projection being scanned.
   KuduSchema GetProjectionSchema() const;
 
+  /// @name Advanced/Unstable API
+  //
+  ///@{
+  /// Set an advanced scan option for this scan.
+  ///
+  /// If the option is unsupported by the client this will return Status::NotSupported()
+  /// immediately. If, on the other hand, the option is not supported by the server, that
+  /// will be reflected on the server's response to the scan.
+  Status SetAdvancedScanOption(std::string name, std::string value);
+  ///@}
+
   /// @return String representation of this scan.
   ///
   /// @internal

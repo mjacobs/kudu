@@ -1236,6 +1236,13 @@ KuduSchema KuduScanner::GetProjectionSchema() const {
   return KuduSchema(*data_->configuration().projection());
 }
 
+Status KuduScanner::SetAdvancedScanOption(string name, string value) {
+  if (data_->open_) {
+    return Status::IllegalState("Scan options must be set before Open()");
+  }
+  return data_->mutable_configuration()->SetAdvancedScanOption(name, value);
+}
+
 const ResourceMetrics& KuduScanner::GetResourceMetrics() const {
   return data_->resource_metrics_;
 }

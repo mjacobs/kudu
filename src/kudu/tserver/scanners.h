@@ -73,6 +73,7 @@ class ScannerManager {
   // Create a new scanner with a unique ID, inserting it into the map.
   void NewScanner(const scoped_refptr<tablet::TabletPeer>& tablet_peer,
                   const std::string& requestor_string,
+                  bool pad_unixtime_micros_for_impala,
                   SharedScanner* scanner);
 
   // Lookup the given scanner by its ID.
@@ -169,7 +170,8 @@ class Scanner {
  public:
   Scanner(std::string id,
           const scoped_refptr<tablet::TabletPeer>& tablet_peer,
-          std::string requestor_string, ScannerMetrics* metrics);
+          std::string requestor_string, ScannerMetrics* metrics,
+          bool pad_unixtime_micros_for_impala);
   ~Scanner();
 
   // Attach an actual iterator and a ScanSpec to this Scanner.
@@ -272,6 +274,10 @@ class Scanner {
     already_reported_stats_ = stats;
   }
 
+  bool pad_unixtime_micros_for_impala() const {
+    return pad_unixtime_micros_for_impala_;
+  }
+
  private:
   friend class ScannerManager;
 
@@ -322,6 +328,9 @@ class Scanner {
   // itself. This is _not_ used for row data, which is scoped to a single RPC
   // response.
   Arena arena_;
+
+  // See:
+  bool pad_unixtime_micros_for_impala_;
 
   DISALLOW_COPY_AND_ASSIGN(Scanner);
 };

@@ -241,6 +241,9 @@ ScanRpcStatus KuduScanner::Data::SendScanRpc(const MonoTime& overall_deadline,
   if (!configuration_.spec().predicates().empty()) {
     controller_.RequireServerFeature(TabletServerFeatures::COLUMN_PREDICATES);
   }
+  if (configuration_.pad_unixtime_micros_for_impala()) {
+    controller_.RequireServerFeature(TabletServerFeatures::PAD_UNIXTIME_MICROS_FOR_IMPALA);
+  }
   ScanRpcStatus scan_status = AnalyzeResponse(
       proxy_->Scan(next_req_,
                    &last_response_,
@@ -259,6 +262,9 @@ Status KuduScanner::Data::OpenTablet(const string& partition_key,
   PrepareRequest(KuduScanner::Data::NEW);
   next_req_.clear_scanner_id();
   NewScanRequestPB* scan = next_req_.mutable_new_scan_request();
+  if (configuration_.pad_unixtime_micros_for_impala()) {
+    scan->set_pad_unixtime_micros_for_impala(true);
+  }
   const KuduScanner::ReadMode read_mode = configuration_.read_mode();
   switch (read_mode) {
     case KuduScanner::READ_LATEST:

@@ -369,20 +369,22 @@ void SetLastRow(const RowBlock& row_block, faststring* last_primary_key) {
 // server-side scan and thus never need to return the actual data.)
 class ScanResultCopier : public ScanResultCollector {
  public:
-  ScanResultCopier(RowwiseRowBlockPB* rowblock_pb, faststring* rows_data, faststring* indirect_data)
+  ScanResultCopier(RowwiseRowBlockPB* rowblock_pb,
+                   faststring* rows_data,
+                   faststring* indirect_data)
       : rowblock_pb_(DCHECK_NOTNULL(rowblock_pb)),
         rows_data_(DCHECK_NOTNULL(rows_data)),
         indirect_data_(DCHECK_NOTNULL(indirect_data)),
         blocks_processed_(0),
-        num_rows_returned_(0) {
-  }
+        num_rows_returned_(0),
+        pad_unixtime_micros_for_impala_(false) {}
 
   virtual void HandleRowBlock(const Schema* client_projection_schema,
                               const RowBlock& row_block) OVERRIDE {
     blocks_processed_++;
     num_rows_returned_ += row_block.selection_vector()->CountSelected();
     SerializeRowBlock(row_block, rowblock_pb_, client_projection_schema,
-                      rows_data_, indirect_data_);
+                      rows_data_, indirect_data_, pad_unixtime_micros_for_impala_);
     SetLastRow(row_block, &last_primary_key_);
   }
 
@@ -401,6 +403,14 @@ class ScanResultCopier : public ScanResultCollector {
     return num_rows_returned_;
   }
 
+  void set_pad_unixtime_micros_for_impala(bool value) {
+    pad_unixtime_micros_for_impala_ = value;
+  }
+
+  bool pad_unixtime_micros_for_impala() const {
+    return pad_unixtime_micros_for_impala_;
+  }
+
  private:
   RowwiseRowBlockPB* const rowblock_pb_;
   faststring* const rows_data_;
@@ -408,6 +418,7 @@ class ScanResultCopier : public ScanResultCollector {
   int blocks_processed_;
   int64_t num_rows_returned_;
   faststring last_primary_key_;
+  bool pad_unixtime_micros_for_impala_;
 
   DISALLOW_COPY_AND_ASSIGN(ScanResultCopier);
 };
@@ -1474,6 +1485,7 @@ Status TabletServiceImpl::HandleNewScanRequest(TabletPeer* tablet_peer,
   SharedScanner scanner;
   server_->scanner_manager()->NewScanner(tablet_peer,
                                          rpc_context->requestor_string(),
+                                         scan_pb.pad_unixtime_micros_for_impala(),
                                          &scanner);
 
   // If we early-exit out of this function, automatically unregister

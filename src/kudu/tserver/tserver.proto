@@ -261,6 +261,12 @@ message NewScanRequestPB {
   // attempt. If set, this will take precedence over the `start_primary_key`
   // field, and functions as an exclusive start primary key.
   optional bytes last_primary_key = 12 [(kudu.REDACT) = true];
+
+  // Whether UNIXTIME_MICROS slots shouild be padded to 16 bytes.
+  // This enables Impala to adopt the data in the Response and perform the
+  // transformation from UNIXTIME_MICROS to the Impala timestamp format in
+  // place.
+  optional bool pad_unixtime_micros_for_impala = 14 [default = false];
 }
 
 // A scan request. Initially, it should specify a scan. Later on, you
@@ -368,4 +374,7 @@ message ScannerKeepAliveResponsePB {
 enum TabletServerFeatures {
   UNKNOWN_FEATURE = 0;
   COLUMN_PREDICATES = 1;
+  // Whether the server supports padding UNIXTIME_MICROS slots.
+  // See NewScanRequestPB::pad_unixtime_micros_for_impala for more details.
+  PAD_UNIXTIME_MICROS_FOR_IMPALA = 2;
 }

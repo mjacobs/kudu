@@ -28,11 +28,14 @@
 using std::unique_ptr;
 using std::string;
 using std::vector;
+using strings::Substitute;
 
 namespace kudu {
 namespace client {
 
 const uint64_t ScanConfiguration::kNoTimestamp = KuduClient::kNoTimestamp;
+const char* kPadUnixTimeMicrosScanOption = "pad_unixtime_micros_for_impala";
+const bool kPadUnixTimeMicrosDefaultValue = false;
 const int ScanConfiguration::kHtTimestampBitsToShift = 12;
 
 ScanConfiguration::ScanConfiguration(KuduTable* table)
@@ -46,7 +49,8 @@ ScanConfiguration::ScanConfiguration(KuduTable* table)
       is_fault_tolerant_(false),
       snapshot_timestamp_(kNoTimestamp),
       timeout_(MonoDelta::FromMilliseconds(KuduScanner::kScanTimeoutMillis)),
-      arena_(1024, 1024 * 1024) {
+      arena_(1024, 1024 * 1024),
+      pad_unixtime_micros_for_impala_(kPadUnixTimeMicrosDefaultValue) {
 }
 
 Status ScanConfiguration::SetProjectedColumnNames(const vector<string>& col_names) {
@@ -174,6 +178,21 @@ void ScanConfiguration::SetSnapshotRaw(uint64_t snapshot_timestamp) {
 
 void ScanConfiguration::SetTimeoutMillis(int millis) {
   timeout_ = MonoDelta::FromMilliseconds(millis);
+}
+
+Status ScanConfiguration::SetAdvancedScanOption(string name, string value) {
+  if (strcasecmp(name.c_str(), kPadUnixTimeMicrosScanOption)) {
+    if (strcasecmp(value.c_str(), "true")) {
+      pad_unixtime_micros_for_impala_ = true;
+    } else if (strcasecmp(value.c_str(), "true")) {
+      pad_unixtime_micros_for_impala_ = false;
+    } else {
+      return Status::InvalidArgument(Substitute("Illegal value: $0 for option: $1", name, value));
+    }
+  } else {
+    return Status::InvalidArgument(Substitute("Unknown advanced scan option: $0", name));
+  }
+  return Status::NotSupported(Substitute("This client doesn't support the $0 scan option.", name));
 }
 
 void ScanConfiguration::OptimizeScanSpec() {
