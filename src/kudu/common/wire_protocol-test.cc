@@ -227,6 +227,88 @@ TEST_F(WireProtocolTest, TestColumnarRowBlockToPB) {
   }
 }
 
+// Create a block of rows in columnar layout and ensure that it can be
+// converted to and from protobuf.
+TEST_F(WireProtocolTest, TestColumnarRowBlockToPBWithPadding) {
+  int kNumRows = 10;
+  Arena arena(1024, 1024 * 1024);
+  // Create a schema with multiple UNIXTIME_MICROS columns in different
+  // positions.
+  Schema schema({ ColumnSchema("key", UNIXTIME_MICROS),
+                  ColumnSchema("col1", STRING),
+                  ColumnSchema("col2", UNIXTIME_MICROS),
+                  ColumnSchema("col3", INT32, true /* nullable */),
+                  ColumnSchema("col4", UNIXTIME_MICROS, true /* nullable */)}, 1);
+  RowBlock block(schema, kNumRows, &arena);
+  block.selection_vector()->SetAllTrue();
+
+  for (int i = 0; i < block.nrows(); i++) {
+    RowBlockRow row = block.row(i);
+
+    *reinterpret_cast<int64_t*>(row.mutable_cell_ptr(0)) = i;
+    Slice col1;
+    // See: FillRowBlockWithTestRows() for the reason why we relocate these
+    // to 'test_data_arena_'.
+    CHECK(test_data_arena_.RelocateSlice("hello world col1", &col1));
+    *reinterpret_cast<Slice*>(row.mutable_cell_ptr(1)) = col1;
+    *reinterpret_cast<int64_t*>(row.mutable_cell_ptr(2)) = i;
+    *reinterpret_cast<int32_t*>(row.mutable_cell_ptr(3)) = i;
+    row.cell(3).set_null(false);
+    *reinterpret_cast<int64_t*>(row.mutable_cell_ptr(4)) = i;
+    row.cell(4).set_null(true);
+  }
+
+  // Convert to PB.
+  RowwiseRowBlockPB pb;
+  faststring direct, indirect;
+  SerializeRowBlock(block, &pb, nullptr, &direct, &indirect, true /* pad timestamps */);
+  SCOPED_TRACE(SecureDebugString(pb));
+  SCOPED_TRACE("Row data: " + direct.ToString());
+  SCOPED_TRACE("Indirect data: " + indirect.ToString());
+
+  // Convert back to a row, ensure that the resulting row is the same
+  // as the one we put in. Can't reuse the decoding methods since we
+  // won't support decoding padded rows within Kudu.
+  vector<const uint8_t*> row_ptrs;
+  Slice direct_sidecar = direct;
+
+  // Row stride is the normal size for the schema + the number of UNIXTIME_MICROS columns * 8,
+  // the size of the padding per column.
+  size_t row_stride = ContiguousRowHelper::row_size(schema) + 3 * 8;
+  ASSERT_EQ(direct_sidecar.size(), row_stride * kNumRows);
+  const uint8_t* base_data;
+  for (int i = 0; i < kNumRows; i++) {
+    base_data = direct_sidecar.data() + i * row_stride;
+    const int64_t key = *reinterpret_cast<const int64_t*>(base_data);
+    EXPECT_EQ(key, i);
+    // Since the "key" column is UNIXTIME_MICROS, for the remaining columns
+    // we need to take padding into account.
+    // 'col1' comes at 16 bytes offset: 8 bytes 'key', 8 bytes padding
+    const Slice* col1_ptr = reinterpret_cast<const Slice*>(base_data + 16);
+    size_t offset_in_indirect = reinterpret_cast<uintptr_t>(col1_ptr->data());
+    Slice col1_val(&indirect[offset_in_indirect], col1_ptr->size());
+    ASSERT_EQ(col1_val.compare(Slice("hello world col1")), 0) << "Unexpected val for the "
+                                                              << i << "th row:"
+                                                              << col1_val.ToDebugString()
+                                                              << " at offset: "
+                                                              << offset_in_indirect;
+    // 'col2' comes at 32 bytes offset: 16 bytes previous, 16 bytes 'col1'
+    const int64_t col2 = *reinterpret_cast<const int64_t*>(base_data + 32);
+    EXPECT_EQ(col2, i);
+    // 'col3' comes at 48 bytes offset: 32 bytes previous, 8 bytes 'col3', 8 bytes padding
+    const int32_t col3 = *reinterpret_cast<const int32_t*>(base_data + 48);
+    EXPECT_EQ(col3, i);
+    // The null bitmap comes at 68 bytes.
+    EXPECT_FALSE(BitmapTest(base_data + 68, 3));
+    // 'col4' is supposed to be null, but should also read 0 since we memsetted the
+    // memory to 0. It should come at 52 bytes offset:  48 bytes previous + 4 bytes
+    // 'col3'
+    const int64_t col4 = *reinterpret_cast<const int64_t*>(base_data + 52);
+    EXPECT_EQ(col4, 0);
+    EXPECT_TRUE(BitmapTest(base_data + 68, 4));
+  }
+}
+
 #ifdef NDEBUG
 TEST_F(WireProtocolTest, TestColumnarRowBlockToPBBenchmark) {
   Arena arena(1024, 1024 * 1024);

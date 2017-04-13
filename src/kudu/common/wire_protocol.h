@@ -126,7 +126,8 @@ Status ColumnPredicateFromPB(const Schema& schema,
 // Requires that block.nrows() > 0
 void SerializeRowBlock(const RowBlock& block, RowwiseRowBlockPB* rowblock_pb,
                        const Schema* client_projection_schema,
-                       faststring* data_buf, faststring* indirect_data);
+                       faststring* data_buf, faststring* indirect_data,
+                       bool pad_unixtime_micros_for_impala = false);
 
 // Rewrites the data pointed-to by row data slice 'row_data_slice' by replacing
 // relative indirect data pointers with absolute ones in 'indirect_data_slice'.

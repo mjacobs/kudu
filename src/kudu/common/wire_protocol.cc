@@ -614,20 +614,18 @@ void AppendRowToString<RowBlockRow>(const RowBlockRow& row, string* buf) {
 // be copied to column 'dst_col_idx' in the output protobuf; otherwise,
 // dst_col_idx must be equal to col_idx.
 template<bool IS_NULLABLE, bool IS_VARLEN>
-static void CopyColumn(const RowBlock& block, int col_idx,
-                       int dst_col_idx, uint8_t* dst_base,
-                       faststring* indirect_data, const Schema* dst_schema) {
+static void CopyColumn(const RowBlock& block, int col_idx, int dst_col_idx, uint8_t* dst_base,
+                       faststring* indirect_data, const Schema* dst_schema, size_t row_stride,
+                       size_t schema_byte_size, size_t column_offset) {
   DCHECK(dst_schema);
   ColumnBlock cblock = block.column_block(col_idx);
-  size_t row_stride = ContiguousRowHelper::row_size(*dst_schema);
-  uint8_t* dst = dst_base + dst_schema->column_offset(dst_col_idx);
-  size_t offset_to_null_bitmap = dst_schema->byte_size() - dst_schema->column_offset(dst_col_idx);
+  uint8_t* dst = dst_base + column_offset;
+  size_t offset_to_null_bitmap = schema_byte_size - column_offset;
 
   size_t cell_size = cblock.stride();
   const uint8_t* src = cblock.cell_ptr(0);
 
-  BitmapIterator selected_row_iter(block.selection_vector()->bitmap(),
-                                   block.nrows());
+  BitmapIterator selected_row_iter(block.selection_vector()->bitmap(), block.nrows());
   int run_size;
   bool selected;
   int row_idx = 0;
@@ -639,13 +637,11 @@ static void CopyColumn(const RowBlock& block, int col_idx,
     }
     for (int i = 0; i < run_size; i++) {
       if (IS_NULLABLE && cblock.is_null(row_idx)) {
-        memset(dst, 0, cell_size);
         BitmapChange(dst + offset_to_null_bitmap, dst_col_idx, true);
       } else if (IS_VARLEN) {
         const Slice *slice = reinterpret_cast<const Slice *>(src);
         size_t offset_in_indirect = indirect_data->size();
-        indirect_data->append(reinterpret_cast<const char*>(slice->data()),
-                              slice->size());
+        indirect_data->append(reinterpret_cast<const char*>(slice->data()), slice->size());
 
         Slice *dst_slice = reinterpret_cast<Slice *>(dst);
         *dst_slice = Slice(reinterpret_cast<const uint8_t*>(offset_in_indirect),
@@ -669,9 +665,12 @@ static void CopyColumn(const RowBlock& block, int col_idx,
 // Because we use a faststring here, ASAN tests become unbearably slow
 // with the extra verifications.
 ATTRIBUTE_NO_ADDRESS_SAFETY_ANALYSIS
-void SerializeRowBlock(const RowBlock& block, RowwiseRowBlockPB* rowblock_pb,
+void SerializeRowBlock(const RowBlock& block,
+                       RowwiseRowBlockPB* rowblock_pb,
                        const Schema* projection_schema,
-                       faststring* data_buf, faststring* indirect_data) {
+                       faststring* data_buf,
+                       faststring* indirect_data,
+                       bool pad_unixtime_micros_for_impala) {
   DCHECK_GT(block.nrows(), 0);
   const Schema& tablet_schema = block.schema();
 
@@ -679,19 +678,46 @@ void SerializeRowBlock(const RowBlock& block, RowwiseRowBlockPB* rowblock_pb,
     projection_schema = &tablet_schema;
   }
 
+  size_t total_padding = 0;
+  bool has_nullable_cols = false;
+  // If we're padding UNIXTIME_MICROS for Impala we need to calculate the total padding
+  // size to adjust the row_stride.
+  if (pad_unixtime_micros_for_impala) {
+    for (int i = 0; i < projection_schema->num_columns(); i++) {
+      if (projection_schema->column(i).type_info()->type() == UNIXTIME_MICROS) {
+        total_padding += 8;
+      }
+      if (projection_schema->column(i).is_nullable()) {
+        has_nullable_cols = true;
+      }
+    }
+  }
+
   size_t old_size = data_buf->size();
-  size_t row_stride = ContiguousRowHelper::row_size(*projection_schema);
+  size_t row_stride = ContiguousRowHelper::row_size(*projection_schema) + total_padding;
   int num_rows = block.selection_vector()->CountSelected();
-  data_buf->resize(old_size + row_stride * num_rows);
-  uint8_t* base = reinterpret_cast<uint8_t*>(&(*data_buf)[old_size]);
+  size_t schema_byte_size = projection_schema->byte_size() + total_padding;
+  size_t new_base_size = row_stride * num_rows;
+
+  data_buf->resize(old_size + new_base_size);
+  uint8_t* base = &(*data_buf)[old_size];
+
+  // Zero out the memory if we have nullable columns or if we're padding slots so that we don't leak
+  // unrelated data to the client.
+  if (total_padding != 0 || has_nullable_cols) {
+    memset(base, 0, new_base_size);
+  }
 
   size_t proj_schema_idx = 0;
+  size_t padding_so_far = 0;
   for (int t_schema_idx = 0; t_schema_idx < tablet_schema.num_columns(); t_schema_idx++) {
     const ColumnSchema& col = tablet_schema.column(t_schema_idx);
     proj_schema_idx = projection_schema->find_column(col.name());
     if (proj_schema_idx == -1) {
       continue;
     }
+
+    size_t column_offset = projection_schema->column_offset(proj_schema_idx) + padding_so_far;
 
     // Generating different functions for each of these cases makes them much less
     // branch-heavy -- we do the branch once outside the loop, and then have a
@@ -701,18 +727,22 @@ void SerializeRowBlock(const RowBlock& block, RowwiseRowBlockPB* rowblock_pb,
     // offsets.
     if (col.is_nullable() && col.type_info()->physical_type() == BINARY) {
       CopyColumn<true, true>(block, t_schema_idx, proj_schema_idx, base, indirect_data,
-                             projection_schema);
+                             projection_schema, row_stride, schema_byte_size, column_offset);
     } else if (col.is_nullable() && col.type_info()->physical_type() != BINARY) {
       CopyColumn<true, false>(block, t_schema_idx, proj_schema_idx, base, indirect_data,
-                              projection_schema);
+                              projection_schema, row_stride, schema_byte_size, column_offset);
     } else if (!col.is_nullable() && col.type_info()->physical_type() == BINARY) {
       CopyColumn<false, true>(block, t_schema_idx, proj_schema_idx, base, indirect_data,
-                              projection_schema);
+                              projection_schema, row_stride, schema_byte_size, column_offset);
     } else if (!col.is_nullable() && col.type_info()->physical_type() != BINARY) {
       CopyColumn<false, false>(block, t_schema_idx, proj_schema_idx, base, indirect_data,
-                               projection_schema);
+                               projection_schema, row_stride, schema_byte_size, column_offset);
     } else {
       LOG(FATAL) << "cannot reach here";
+    }
+
+    if (col.type_info()->type() == UNIXTIME_MICROS && pad_unixtime_micros_for_impala) {
+      padding_so_far += 8;
     }
   }
   rowblock_pb->set_num_rows(rowblock_pb->num_rows() + num_rows);
