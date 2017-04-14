@@ -1274,7 +1274,8 @@ void TabletServiceImpl::Checksum(const ChecksumRequestPB* req,
 }
 
 bool TabletServiceImpl::SupportsFeature(uint32_t feature) const {
-  return feature == TabletServerFeatures::COLUMN_PREDICATES;
+  return (feature == TabletServerFeatures::COLUMN_PREDICATES ||
+      feature == TabletServerFeatures::PAD_UNIXTIME_MICROS_FOR_IMPALA);
 }
 
 void TabletServiceImpl::Shutdown() {
